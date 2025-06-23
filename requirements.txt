@@ -1,0 +1,13 @@
+email-validator 
+tensorflow          # Pour le modèle Keras et les opérations TensorFlow
+scikit-learn        # Pour le calcul des métriques (F1-score)
+huggingface_hub     # Pour interagir avec Hugging Face Model Hub (déploiement)
+python-dotenv       # Pour charger les variables d'environnement (.env)
+protobuf            # Une dépendance requise par TensorFlow pour la sérialisation
+
+# Dépendances supplémentaires pour l'envoi d'e-mails via GitHub Actions,
+# même si elles ne sont pas utilisées directement par model.py, elles sont nécessaires
+# pour le pipeline complet si elles ne sont pas déjà incluses par d'autres packages.
+# dawidd6/action-send-mail gère généralement ses propres dépendances,
+# mais si vous aviez un script Python local pour l'email, elles seraient là.
+# Pour le pipeline GitHub Actions, ces dépendances sont installées directement par l'action.

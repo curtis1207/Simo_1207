@@ -2,11 +2,13 @@ import os
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Embedding, GlobalAveragePooling1D, Dense, TextVectorization
+from tensorflow.keras.callbacks import ModelCheckpoint
 import numpy as np
 import json
+import sys # Importé pour lire les arguments de ligne de commande
+from sklearn.metrics import f1_score # Importé pour l'évaluation
 
 # Chemin où le modèle sera sauvegardé
-# Assurez-vous que ce dossier est dans votre .gitignore
 MODEL_DIR = "./models_dummy"
 MODEL_PATH = os.path.join(MODEL_DIR, "sentiment_dummy_model.h5")
 VOCAB_PATH = os.path.join(MODEL_DIR, "vocab.json") # Pour sauvegarder le vocabulaire du TextVectorization
@@ -23,10 +25,13 @@ def train_and_save_model():
         os.makedirs(MODEL_DIR)
 
     # 1. Préparation d'un petit jeu de données (IMDb pour la simplicité)
-    # Chargement d'un très petit échantillon pour que le modèle soit vraiment "factice"
-    (x_train_raw, y_train_raw), _ = tf.keras.datasets.imdb.load_data(num_words=1000)
+    (x_train_raw, y_train_raw), (x_test_raw, y_test_raw) = tf.keras.datasets.imdb.load_data(num_words=1000)
     x_train_small = x_train_raw[:100] # Limite à 100 exemples
     y_train_small = y_train_raw[:100]
+    
+    # Pour l'évaluation, nous utiliserons un petit échantillon séparé
+    x_eval_small = x_test_raw[:20] # Encore plus petit pour l'évaluation factice
+    y_eval_small = y_test_raw[:20]
 
     # Convertir les index en texte pour TextVectorization
     word_index = tf.keras.datasets.imdb.get_word_index()
@@ -38,7 +43,10 @@ def train_and_save_model():
     x_train_text = [decode_review(indices) for indices in x_train_small]
     y_train = np.array(y_train_small)
 
-    print(f"Jeu de données factice préparé : {len(x_train_text)} exemples.")
+    x_eval_text = [decode_review(indices) for indices in x_eval_small]
+    y_eval = np.array(y_eval_small)
+
+    print(f"Jeu de données factice préparé : {len(x_train_text)} exemples d'entraînement, {len(x_eval_text)} exemples d'évaluation.")
 
     # 2. Configuration de la couche TextVectorization
     max_features = 1000 # Seulement 1000 mots pour ce modèle factice
@@ -56,12 +64,11 @@ def train_and_save_model():
     vectorize_layer.adapt(text_dataset)
     print("Vocabulaire appris.")
 
-    # Sauvegarder le vocabulaire (important pour la prédiction)
+    # Sauvegarder le vocabulaire (important pour la prédiction et l'évaluation)
     vocabulary = vectorize_layer.get_vocabulary()
     with open(VOCAB_PATH, 'w', encoding='utf-8') as f:
         json.dump(vocabulary, f, ensure_ascii=False, indent=4)
     print(f"Vocabulaire sauvegardé dans : {VOCAB_PATH}")
-
 
     # 3. Création du modèle Keras très léger
     embedding_dim = 4 # Dimension d'embedding encore plus petite
@@ -93,7 +100,77 @@ def train_and_save_model():
     model.save(MODEL_PATH, save_format='h5') # Sauvegarde au format HDF5
     print(f"Modèle factice sauvegardé dans : {MODEL_PATH}")
     print("--- Fin de l'entraînement et sauvegarde du modèle factice ---")
-    return model # Retourne le modèle entraîné (facultatif)
+
+    # Retourne les données d'évaluation pour usage direct si besoin (pour l'étape d'évaluation)
+    return model, x_eval_text, y_eval
+
+def evaluate_model_and_save_results(model=None, x_eval_text=None, y_eval=None):
+    """
+    Charge le modèle, évalue sa performance et sauvegarde les résultats.
+    Peut recevoir un modèle déjà chargé et des données si appelée après entraînement.
+    """
+    print("\n--- Début de l'évaluation du modèle ---")
+
+    if model is None:
+        # Tenter de charger le modèle si non fourni
+        if not os.path.exists(MODEL_PATH):
+            print(f"Erreur: Le fichier du modèle '{MODEL_PATH}' n'existe pas. Veuillez d'abord entraîner et sauvegarder le modèle.")
+            return {"error": "Modèle non trouvé pour évaluation."}
+        
+        if not os.path.exists(VOCAB_PATH):
+            print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
+            return {"error": "Vocabulaire non trouvé pour évaluation."}
+
+        # Charger le vocabulaire pour la couche TextVectorization
+        with open(VOCAB_PATH, 'r', encoding='utf-8') as f:
+            vocabulary = json.load(f)
+        
+        # Recréer la couche TextVectorization avec le vocabulaire appris
+        max_features = 1000
+        sequence_length = 50
+        loaded_vectorize_layer = TextVectorization(
+            max_tokens=max_features, output_mode='int', output_sequence_length=sequence_length
+        )
+        loaded_vectorize_layer.set_weights([np.array(vocabulary), np.empty(shape=(0,))])
+        
+        custom_objects = {"TextVectorization": TextVectorization}
+        try:
+            model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
+        except Exception as e:
+            print(f"Erreur lors du chargement du modèle pour évaluation: {e}")
+            return {"error": f"Impossible de charger le modèle pour évaluation: {e}"}
+
+    # Préparer le jeu de données d'évaluation si non fourni
+    if x_eval_text is None or y_eval is None:
+        (x_train_raw, y_train_raw), (x_test_raw, y_test_raw) = tf.keras.datasets.imdb.load_data(num_words=1000)
+        word_index = tf.keras.datasets.imdb.get_word_index()
+        reverse_word_index = dict([(value, key) for (key, value) in word_index.items()])
+        def decode_review(text_indices):
+            return " ".join([reverse_word_index.get(i - 3, "?") for i in text_indices])
+        num_eval_samples = 20 # Doit correspondre à la taille utilisée dans train_and_save_model
+        x_eval_text = [decode_review(indices) for indices in x_test_raw[:num_eval_samples]]
+        y_eval = np.array(y_test_raw[:num_eval_samples])
+
+    eval_dataset_tf = tf.data.Dataset.from_tensor_slices(x_eval_text).batch(32)
+
+    # Effectuer l'évaluation
+    loss, accuracy = model.evaluate(eval_dataset_tf, verbose=0)
+    print(f"Résultats d'évaluation - Perte: {loss:.4f}, Précision: {accuracy:.4f}")
+
+    # Calcul du F1-score
+    y_pred_probs = model.predict(eval_dataset_tf, verbose=0)
+    y_pred = (y_pred_probs > 0.5).astype(int).flatten()
+    f1 = f1_score(y_eval, y_pred, average="binary")
+    print(f"F1-score: {f1:.4f}")
+
+    # Sauvegarde des résultats d'évaluation dans un fichier JSON
+    evaluation_results_file = "evaluation_results.json"
+    with open(evaluation_results_file, "w") as f:
+        json.dump({"accuracy": accuracy, "f1_score": f1}, f)
+    print(f"Résultats de l'évaluation sauvegardés dans {evaluation_results_file}")
+    print("--- Fin de l'évaluation du modèle ---")
+    return {"accuracy": accuracy, "f1_score": f1}
+
 
 def predict_sentiment(text: str):
     """
@@ -114,34 +191,26 @@ def predict_sentiment(text: str):
         vocabulary = json.load(f)
 
     # Recréer la couche TextVectorization avec le vocabulaire appris
-    # C'est une étape cruciale pour s'assurer que le modèle charge correctement
     max_features = 1000 # Doit correspondre à la valeur utilisée lors de l'entraînement
     sequence_length = 50 # Doit correspondre à la valeur utilisée lors de l'entraînement
     
-    # La couche TextVectorization doit être passée aux custom_objects si elle est incluse dans le modèle sauvegardé
     loaded_vectorize_layer = TextVectorization(
         max_tokens=max_features,
         output_mode='int',
         output_sequence_length=sequence_length
     )
-    loaded_vectorize_layer.set_weights([np.array(vocabulary), np.empty(shape=(0,))]) # Charger le vocabulaire
+    loaded_vectorize_layer.set_weights([np.array(vocabulary), np.empty(shape=(0,))])
 
     # Charger le modèle, en spécifiant les objets personnalisés
-    # Note: Si TextVectorization était sauvegardée *dans* le modèle, on la passe via custom_objects
-    # Sinon, le modèle doit être reconstruit avec la même couche TextVectorization
-    # Pour HDF5, custom_objects est souvent nécessaire.
-    custom_objects = {"TextVectorization": loaded_vectorize_layer} # Ou juste TextVectorization si elle est définie globalement
-
+    custom_objects = {"TextVectorization": TextVectorization} # Passer la classe
+    
     try:
-        model = tf.keras.models.load_model(MODEL_PATH, custom_objects={"TextVectorization": TextVectorization})
+        model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
     except Exception as e:
         print(f"Erreur lors du chargement du modèle: {e}")
-        # Si la TextVectorization a été sauvegardée comme partie du modèle,
-        # le mieux est d'avoir une TextVectorization qui charge directement le vocabulaire interne.
-        # Pour cet exemple simple, nous faisons une reconstruction plus directe si nécessaire.
-        # En production, il est souvent préférable de sauvegarder le TextVectorization séparément ou d'utiliser SavedModel
-        # qui gère mieux les couches personnalisées.
-        print("Tentative de rechargement en ignorant les custom_objects pour simple Keras model...")
+        # En cas d'échec du chargement avec custom_objects, tenter sans si possible
+        # (peut arriver si la couche vectorization n'est pas la première ou autre)
+        print("Tentative de rechargement sans custom_objects...")
         model = tf.keras.models.load_model(MODEL_PATH)
 
 
@@ -161,21 +230,39 @@ def predict_sentiment(text: str):
     
     return {"text": text, "sentiment": sentiment, "probability": float(prediction_proba)}
 
+
 if __name__ == "__main__":
-    # Ceci est le bloc qui s'exécute lorsque vous lancez le script directement
-    print("Exécution du script model.py en mode autonome.")
-    
-    # Étape 1: Entraîner et sauvegarder le modèle factice
-    trained_model = train_and_save_model()
-    
-    # Étape 2: Effectuer des prédictions (après avoir sauvegardé et rechargé pour simuler le flux)
-    if trained_model:
-        print("\n--- Exemples de prédictions après entraînement/sauvegarde ---")
-        predict_sentiment("C'était un film fantastique que j'ai adoré !", trained_model)
-        predict_sentiment("Je n'ai vraiment pas aimé ce film, c'était horrible.", trained_model)
-        predict_sentiment("C'est un film correct, rien de spécial.", trained_model)
-    
-    # Vous pouvez également tester en lançant le script deux fois:
-    # 1. Pour entraîner et sauvegarder
-    # 2. Pour commenter l'appel à train_and_save_model() et juste tester la prédiction
-    # Cela simule un déploiement où le modèle est déjà là.
+    # Ce bloc est exécuté si le script est lancé directement depuis la ligne de commande.
+    # Nous l'adaptons pour permettre différents modes d'exécution (train, evaluate, predict)
+    # via les arguments de ligne de commande.
+
+    if len(sys.argv) > 1:
+        command = sys.argv[1]
+        if command == "train":
+            train_and_save_model()
+        elif command == "evaluate":
+            evaluate_model_and_save_results()
+        elif command == "predict":
+            if len(sys.argv) > 2:
+                text_to_predict = sys.argv[2]
+                predict_sentiment(text_to_predict)
+            else:
+                print("Usage: python model.py predict 'Your text here'")
+        else:
+            print("Commande inconnue. Utilisez 'train', 'evaluate' ou 'predict'.")
+    else:
+        # Comportement par défaut si aucun argument n'est donné (comme avant)
+        print("Exécution du script model.py en mode autonome (par défaut: entraînement et exemples de prédiction).")
+        # Étape 1: Entraîner et sauvegarder le modèle factice
+        trained_model, x_eval_text, y_eval = train_and_save_model()
+        
+        # Étape 2: Effectuer des prédictions (après avoir sauvegardé et rechargé pour simuler le flux)
+        if trained_model:
+            print("\n--- Exemples de prédictions après entraînement/sauvegarde ---")
+            predict_sentiment("C'était un film fantastique que j'ai adoré !")
+            predict_sentiment("Je n'ai vraiment pas aimé ce film, c'était horrible.")
+            predict_sentiment("C'est un film correct, rien de spécial.")
+            
+            # Et une évaluation pour vérifier la nouvelle fonction
+            evaluate_model_and_save_results(model=trained_model, x_eval_text=x_eval_text, y_eval=y_eval)
+
