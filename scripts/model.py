@@ -25,13 +25,7 @@ def train_and_save_model():
         os.makedirs(MODEL_DIR)
 
     # 1. Préparation d'un petit jeu de données (IMDb pour la simplicité)
-    (x_train_raw, y_train_raw), (x_test_raw, y_test_raw) = tf.keras.datasets.imdb.load_data(num_words=1000)
-    x_train_small = x_train_raw[:100] # Limite à 100 exemples
-    y_train_small = y_train_raw[:100]
-    
-    # Pour l'évaluation, nous utiliserons un petit échantillon séparé
-    x_eval_small = x_test_raw[:20] # Encore plus petit pour l'évaluation factice
-    y_eval_small = y_test_raw[:20]
+    (x_raw, y_raw), (x_test_raw, y_test_raw) = tf.keras.datasets.imdb.load_data(num_words=1000)
 
     # Convertir les index en texte pour TextVectorization
     word_index = tf.keras.datasets.imdb.get_word_index()
@@ -40,11 +34,15 @@ def train_and_save_model():
     def decode_review(text_indices):
         return " ".join([reverse_word_index.get(i - 3, "?") for i in text_indices])
 
-    x_train_text = [decode_review(indices) for indices in x_train_small]
-    y_train = np.array(y_train_small)
+    # Décodez un petit échantillon pour l'entraînement et l'évaluation
+    num_train_samples = 100
+    num_eval_samples = 20 # Encore plus petit pour l'évaluation factice
 
-    x_eval_text = [decode_review(indices) for indices in x_eval_small]
-    y_eval = np.array(y_eval_small)
+    x_train_text = [decode_review(indices) for indices in x_raw[:num_train_samples]]
+    y_train = np.array(y_raw[:num_train_samples])
+
+    x_eval_text = [decode_review(indices) for indices in x_test_raw[:num_eval_samples]]
+    y_eval = np.array(y_test_raw[:num_eval_samples])
 
     print(f"Jeu de données factice préparé : {len(x_train_text)} exemples d'entraînement, {len(x_eval_text)} exemples d'évaluation.")
 
@@ -64,7 +62,8 @@ def train_and_save_model():
     vectorize_layer.adapt(text_dataset)
     print("Vocabulaire appris.")
 
-    # Sauvegarder le vocabulaire (important pour la prédiction et l'évaluation)
+    # Sauvegarder le vocabulaire (important pour la prédiction et l'évaluation si vous le chargez séparément)
+    # Bien que la couche soit dans le modèle, sauvegarder le vocabulaire peut être utile.
     vocabulary = vectorize_layer.get_vocabulary()
     with open(VOCAB_PATH, 'w', encoding='utf-8') as f:
         json.dump(vocabulary, f, ensure_ascii=False, indent=4)
@@ -75,7 +74,7 @@ def train_and_save_model():
 
     print("Construction du modèle TensorFlow/Keras factice...")
     model = Sequential([
-        tf.keras.Input(shape=(1,), dtype=tf.string),
+        tf.keras.Input(shape=(1,), dtype=tf.string), # Input est une chaîne de caractères
         vectorize_layer, # La couche de vectorisation est intégrée au modèle
         Embedding(max_features + 1, embedding_dim),
         GlobalAveragePooling1D(),
@@ -101,7 +100,7 @@ def train_and_save_model():
     print(f"Modèle factice sauvegardé dans : {MODEL_PATH}")
     print("--- Fin de l'entraînement et sauvegarde du modèle factice ---")
 
-    # Retourne les données d'évaluation pour usage direct si besoin (pour l'étape d'évaluation)
+    # Retourne le modèle entraîné et les données d'évaluation pour usage direct si besoin
     return model, x_eval_text, y_eval
 
 def evaluate_model_and_save_results(model=None, x_eval_text=None, y_eval=None):
@@ -111,30 +110,24 @@ def evaluate_model_and_save_results(model=None, x_eval_text=None, y_eval=None):
     """
     print("\n--- Début de l'évaluation du modèle ---")
 
+    # Définir custom_objects ici car TextVectorization est une couche personnalisée
+    custom_objects = {"TextVectorization": TextVectorization}
+
     if model is None:
         # Tenter de charger le modèle si non fourni
         if not os.path.exists(MODEL_PATH):
             print(f"Erreur: Le fichier du modèle '{MODEL_PATH}' n'existe pas. Veuillez d'abord entraîner et sauvegarder le modèle.")
             return {"error": "Modèle non trouvé pour évaluation."}
         
-        if not os.path.exists(VOCAB_PATH):
-            print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
-            return {"error": "Vocabulaire non trouvé pour évaluation."}
+        # Le fichier de vocabulaire n'est plus strictement nécessaire pour le chargement
+        # du modèle complet si TextVectorization est la première couche et sauvegardée avec le modèle.
+        # Mais le test d'existence peut rester pour info.
+        # if not os.path.exists(VOCAB_PATH):
+        #     print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
+        #     return {"error": "Vocabulaire non trouvé pour évaluation."}
 
-        # Charger le vocabulaire pour la couche TextVectorization
-        with open(VOCAB_PATH, 'r', encoding='utf-8') as f:
-            vocabulary = json.load(f)
-        
-        # Recréer la couche TextVectorization avec le vocabulaire appris
-        max_features = 1000
-        sequence_length = 50
-        loaded_vectorize_layer = TextVectorization(
-            max_tokens=max_features, output_mode='int', output_sequence_length=sequence_length
-        )
-        loaded_vectorize_layer.set_weights([np.array(vocabulary), np.empty(shape=(0,))])
-        
-        custom_objects = {"TextVectorization": TextVectorization}
         try:
+            # Charger le modèle. Keras va gérer le chargement de TextVectorization et son vocabulaire.
             model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
         except Exception as e:
             print(f"Erreur lors du chargement du modèle pour évaluation: {e}")
@@ -142,7 +135,7 @@ def evaluate_model_and_save_results(model=None, x_eval_text=None, y_eval=None):
 
     # Préparer le jeu de données d'évaluation si non fourni
     if x_eval_text is None or y_eval is None:
-        (x_train_raw, y_train_raw), (x_test_raw, y_test_raw) = tf.keras.datasets.imdb.load_data(num_words=1000)
+        (x_raw, y_raw), (x_test_raw, y_test_raw) = tf.keras.datasets.imdb.load_data(num_words=1000)
         word_index = tf.keras.datasets.imdb.get_word_index()
         reverse_word_index = dict([(value, key) for (key, value) in word_index.items()])
         def decode_review(text_indices):
@@ -178,40 +171,25 @@ def predict_sentiment(text: str):
     """
     print("\n--- Début de la prédiction avec le modèle factice ---")
 
+    # Définir custom_objects ici car TextVectorization est une couche personnalisée
+    custom_objects = {"TextVectorization": TextVectorization}
+
     if not os.path.exists(MODEL_PATH):
         print(f"Erreur: Le fichier du modèle '{MODEL_PATH}' n'existe pas. Veuillez d'abord entraîner et sauvegarder le modèle.")
         return {"error": "Modèle non trouvé. Veuillez exécuter train_and_save_model() d'abord."}
 
-    if not os.path.exists(VOCAB_PATH):
-        print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
-        return {"error": "Vocabulaire non trouvé. Re-entraînez le modèle."}
-
-    # Charger le vocabulaire pour la couche TextVectorization
-    with open(VOCAB_PATH, 'r', encoding='utf-8') as f:
-        vocabulary = json.load(f)
-
-    # Recréer la couche TextVectorization avec le vocabulaire appris
-    max_features = 1000 # Doit correspondre à la valeur utilisée lors de l'entraînement
-    sequence_length = 50 # Doit correspondre à la valeur utilisée lors de l'entraînement
-    
-    loaded_vectorize_layer = TextVectorization(
-        max_tokens=max_features,
-        output_mode='int',
-        output_sequence_length=sequence_length
-    )
-    loaded_vectorize_layer.set_weights([np.array(vocabulary), np.empty(shape=(0,))])
-
-    # Charger le modèle, en spécifiant les objets personnalisés
-    custom_objects = {"TextVectorization": TextVectorization} # Passer la classe
+    # Le fichier de vocabulaire n'est plus strictement nécessaire pour le chargement
+    # du modèle complet si TextVectorization est la première couche et sauvegardée avec le modèle.
+    # if not os.path.exists(VOCAB_PATH):
+    #     print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
+    #     return {"error": "Vocabulaire non trouvé. Re-entraînez le modèle."}
     
     try:
+        # Charger le modèle. Keras va gérer le chargement de TextVectorization et son vocabulaire.
         model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
     except Exception as e:
         print(f"Erreur lors du chargement du modèle: {e}")
-        # En cas d'échec du chargement avec custom_objects, tenter sans si possible
-        # (peut arriver si la couche vectorization n'est pas la première ou autre)
-        print("Tentative de rechargement sans custom_objects...")
-        model = tf.keras.models.load_model(MODEL_PATH)
+        return {"error": f"Impossible de charger le modèle pour prédiction: {e}"}
 
 
     # Préparer l'entrée pour la prédiction
@@ -265,4 +243,3 @@ if __name__ == "__main__":
             
             # Et une évaluation pour vérifier la nouvelle fonction
             evaluate_model_and_save_results(model=trained_model, x_eval_text=x_eval_text, y_eval=y_eval)
-
