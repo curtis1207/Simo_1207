@@ -11,7 +11,7 @@ from sklearn.metrics import f1_score # Importé pour l'évaluation
 # Chemin où le modèle sera sauvegardé
 MODEL_DIR = "./models_dummy"
 MODEL_PATH = os.path.join(MODEL_DIR, "sentiment_dummy_model.h5")
-VOCAB_PATH = os.path.join(MODEL_DIR, "vocab.json") # Pour sauvegarder le vocabulaire du TextVectorization
+VOCAB_PATH = os.path.join(MODEL_DIR, "vocab.json") # Pour sauvegarder le vocabulaire du TextVectorization (utile à titre informatif ou pour d'autres usages)
 
 def train_and_save_model():
     """
@@ -62,8 +62,7 @@ def train_and_save_model():
     vectorize_layer.adapt(text_dataset)
     print("Vocabulaire appris.")
 
-    # Sauvegarder le vocabulaire (important pour la prédiction et l'évaluation si vous le chargez séparément)
-    # Bien que la couche soit dans le modèle, sauvegarder le vocabulaire peut être utile.
+    # Sauvegarder le vocabulaire (peut être utile pour l'inspection ou d'autres usages, même si la couche est sauvegardée avec le modèle)
     vocabulary = vectorize_layer.get_vocabulary()
     with open(VOCAB_PATH, 'w', encoding='utf-8') as f:
         json.dump(vocabulary, f, ensure_ascii=False, indent=4)
@@ -111,6 +110,7 @@ def evaluate_model_and_save_results(model=None, x_eval_text=None, y_eval=None):
     print("\n--- Début de l'évaluation du modèle ---")
 
     # Définir custom_objects ici car TextVectorization est une couche personnalisée
+    # Cela aide Keras à reconstruire correctement la couche lors du chargement.
     custom_objects = {"TextVectorization": TextVectorization}
 
     if model is None:
@@ -121,13 +121,10 @@ def evaluate_model_and_save_results(model=None, x_eval_text=None, y_eval=None):
         
         # Le fichier de vocabulaire n'est plus strictement nécessaire pour le chargement
         # du modèle complet si TextVectorization est la première couche et sauvegardée avec le modèle.
-        # Mais le test d'existence peut rester pour info.
-        # if not os.path.exists(VOCAB_PATH):
-        #     print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
-        #     return {"error": "Vocabulaire non trouvé pour évaluation."}
-
+        # Donc, nous n'appelons PLUS .set_weights() manuellement ici.
+        
         try:
-            # Charger le modèle. Keras va gérer le chargement de TextVectorization et son vocabulaire.
+            # Charger le modèle. Keras va gérer le chargement de TextVectorization et son vocabulaire interne.
             model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
         except Exception as e:
             print(f"Erreur lors du chargement du modèle pour évaluation: {e}")
@@ -180,12 +177,10 @@ def predict_sentiment(text: str):
 
     # Le fichier de vocabulaire n'est plus strictement nécessaire pour le chargement
     # du modèle complet si TextVectorization est la première couche et sauvegardée avec le modèle.
-    # if not os.path.exists(VOCAB_PATH):
-    #     print(f"Erreur: Le fichier de vocabulaire '{VOCAB_PATH}' n'existe pas.")
-    #     return {"error": "Vocabulaire non trouvé. Re-entraînez le modèle."}
+    # Donc, nous n'appelons PLUS .set_weights() manuellement ici.
     
     try:
-        # Charger le modèle. Keras va gérer le chargement de TextVectorization et son vocabulaire.
+        # Charger le modèle. Keras va gérer le chargement de TextVectorization et son vocabulaire interne.
         model = tf.keras.models.load_model(MODEL_PATH, custom_objects=custom_objects)
     except Exception as e:
         print(f"Erreur lors du chargement du modèle: {e}")
